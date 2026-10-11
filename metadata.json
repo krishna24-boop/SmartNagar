@@ -1,0 +1,6 @@
+{
+  "name": "SmartNagar - AI Civic Redressal & Smart Nigam Portal",
+  "description": "AI-powered civic complaint redressal platform with weather-driven dynamic priority scoring, privacy-first citizen data protection, and real-time municipal tracking.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
