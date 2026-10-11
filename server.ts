@@ -13,6 +13,13 @@ const PORT = process.env.PORT || 3000;
 let mongoEnabled = false;
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 
+function getGeminiErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('status' in error)) {
+    return undefined;
+  }
+  return typeof error.status === 'number' ? error.status : undefined;
+}
+
 app.use(express.json({ limit: '25mb' }));
 
 // Initialize Gemini Client
@@ -689,7 +696,7 @@ Output strictly valid JSON with these exact keys.`;
 
     let aiResult;
     try {
-      const response = await ai.models.generateContent({
+      const request = {
         model: 'gemini-3.8-flash',
         contents: {
           parts: [
@@ -705,7 +712,18 @@ Output strictly valid JSON with these exact keys.`;
         config: {
           responseMimeType: 'application/json',
         },
-      });
+      };
+      const generateDiagnosis = () => ai.models.generateContent(request);
+      let response;
+      try {
+        response = await generateDiagnosis();
+      } catch (error) {
+        if (getGeminiErrorStatus(error) !== 503) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        response = await generateDiagnosis();
+      }
 
       const text = response.text;
       if (!text) {
@@ -742,7 +760,20 @@ Output strictly valid JSON with these exact keys.`;
       };
     } catch (geminiErr) {
       console.error('Gemini vision diagnosis failed:', geminiErr);
-      return res.status(502).json({ error: 'Gemini AI से फोटो का विश्लेषण नहीं हो पाया। API key, उपलब्ध model और server logs जाँचें, फिर दोबारा प्रयास करें।' });
+      const status = getGeminiErrorStatus(geminiErr);
+      if (status === 503) {
+        return res.status(503).json({ error: 'Gemini AI सेवा अभी व्यस्त है। कृपया कुछ देर बाद फिर कोशिश करें।' });
+      }
+      if (status === 429) {
+        return res.status(429).json({ error: 'Gemini API की अनुरोध सीमा पूरी हो गई है। कृपया बाद में प्रयास करें या Google AI Studio में quota जाँचें।' });
+      }
+      if (status === 401 || status === 403) {
+        return res.status(502).json({ error: 'Gemini API key मान्य नहीं है या इस API की अनुमति नहीं है। Render में GEMINI_API_KEY और AI Studio access जाँचें।' });
+      }
+      if (status === 404) {
+        return res.status(502).json({ error: 'Gemini model उपलब्ध नहीं है। कृपया server configuration जाँचें।' });
+      }
+      return res.status(502).json({ error: 'Gemini AI से फोटो का विश्लेषण नहीं हो पाया। कृपया बाद में फिर कोशिश करें।' });
     }
 
     // Weather Priority Boost
