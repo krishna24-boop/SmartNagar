@@ -26,3 +26,11 @@ Example MongoDB URI:
 `mongodb+srv://<username>:<password>@cluster.mongodb.net/nagarvani`
 
 If `MONGO_URI` is not configured, the app continues in its demo in-memory mode.
+
+## Deploy to Render
+
+1. Push this repository to GitHub, then in Render choose **New → Blueprint** and select `krishna24-boop/SmartNagar`.
+2. Render reads [render.yaml](./render.yaml). Set the prompted `MONGO_URI`, `GEMINI_API_KEY`, and all `DEMO_*_PASSWORD` values to private secrets; do not put credentials in GitHub.
+3. Apply the Blueprint. Render builds the Vite app and starts the production Express server. After deployment, open the service's `onrender.com` URL.
+
+MongoDB is required in production so complaints and accounts are not silently stored only in memory. The first startup seeds the demo accounts only when the MongoDB collections are empty.

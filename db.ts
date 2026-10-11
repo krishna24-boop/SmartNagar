@@ -60,6 +60,9 @@ export const ComplaintModel = mongoose.models.Complaint || mongoose.model('Compl
 export async function connectToMongo(): Promise<boolean> {
   const mongoUri = process.env.MONGO_URI;
   if (!mongoUri) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('MONGO_URI must be set in production to prevent data loss.');
+    }
     return false;
   }
 

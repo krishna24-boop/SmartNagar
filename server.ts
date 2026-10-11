@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 import { connectToMongo, persistComplaints, persistUsers, syncSeedData } from './db';
 
 dotenv.config({ path: ['.env.local', '.env'] });
@@ -10,6 +11,7 @@ dotenv.config({ path: ['.env.local', '.env'] });
 const app = express();
 const PORT = process.env.PORT || 3000;
 let mongoEnabled = false;
+const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 
 app.use(express.json({ limit: '25mb' }));
 
@@ -96,7 +98,7 @@ export interface DbComplaint {
 function requiredSeedPassword(variableName: string): string {
   const password = process.env[variableName];
   if (!password) {
-    throw new Error(`${variableName} must be set in .env.local to initialize demo accounts.`);
+    throw new Error(`${variableName} must be set in the environment to initialize demo accounts.`);
   }
   return password;
 }
@@ -1067,9 +1069,9 @@ async function setupServer() {
     app.use(vite.middlewares);
   } else {
     // Serve static files in production
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.use(express.static(path.resolve(serverDirectory, 'dist')));
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.resolve(serverDirectory, 'dist', 'index.html'));
     });
   }
 
