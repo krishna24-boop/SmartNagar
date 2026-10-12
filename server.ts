@@ -4,14 +4,17 @@ import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
 import { connectToMongo, persistComplaints, persistUsers, syncSeedData } from './db';
 
 dotenv.config({ path: ['.env.local', '.env'] });
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 let mongoEnabled = false;
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 
 function getGeminiErrorStatus(error: unknown): number | undefined {
   if (typeof error !== 'object' || error === null || !('status' in error)) {
@@ -20,7 +23,7 @@ function getGeminiErrorStatus(error: unknown): number | undefined {
   return typeof error.status === 'number' ? error.status : undefined;
 }
 
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: '6mb' }));
 
 // Initialize Gemini Client
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
@@ -495,6 +498,60 @@ async function calculateWeatherPriority(category: string, lat: number, lng: numb
 }
 
 // Authentication Middleware Simulator
+const diagnosisSessions = new Map<string, { userId: string; expiresAt: number }>();
+const diagnosisRateLimits = new Map<string, { count: number; resetAt: number }>();
+const DIAGNOSIS_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const DIAGNOSIS_RATE_LIMIT = 10;
+const DIAGNOSIS_RATE_WINDOW_MS = 15 * 60 * 1000;
+
+function createDiagnosisSession(user: DbUser): string {
+  const token = randomBytes(32).toString('hex');
+  diagnosisSessions.set(token, {
+    userId: user.id,
+    expiresAt: Date.now() + DIAGNOSIS_SESSION_TTL_MS,
+  });
+  return token;
+}
+
+function getDiagnosisUser(req: Request): DbUser | null {
+  const match = /^Bearer\s+([a-f0-9]{64})$/i.exec(req.headers.authorization || '');
+  if (!match) return null;
+
+  const session = diagnosisSessions.get(match[1]);
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) {
+    diagnosisSessions.delete(match[1]);
+    return null;
+  }
+
+  return users.find((user) => user.id === session.userId) || null;
+}
+
+function checkDiagnosisRateLimit(userId: string, ipAddress: string): number {
+  const now = Date.now();
+  for (const [key, entry] of diagnosisRateLimits) {
+    if (entry.resetAt <= now) diagnosisRateLimits.delete(key);
+  }
+
+  const keys = [`account:${userId}`, `ip:${ipAddress}`];
+  const limitedEntry = keys
+    .map((key) => diagnosisRateLimits.get(key))
+    .find((entry) => entry && entry.count >= DIAGNOSIS_RATE_LIMIT);
+  if (limitedEntry) {
+    return Math.ceil((limitedEntry.resetAt - now) / 1000);
+  }
+
+  for (const key of keys) {
+    const entry = diagnosisRateLimits.get(key);
+    if (entry && entry.resetAt > now) {
+      entry.count += 1;
+    } else {
+      diagnosisRateLimits.set(key, { count: 1, resetAt: now + DIAGNOSIS_RATE_WINDOW_MS });
+    }
+  }
+  return 0;
+}
+
 function getUserFromToken(req: Request): DbUser | null {
   const authHeader = req.headers.authorization;
   if (!authHeader) return null;
@@ -532,6 +589,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 
   res.json({
     token: newUser.id,
+    diagnosisToken: createDiagnosisSession(newUser),
     user: {
       id: newUser.id,
       name: newUser.name,
@@ -560,6 +618,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
 
   res.json({
     token: user.id,
+    diagnosisToken: createDiagnosisSession(user),
     user: {
       id: user.id,
       name: user.name,
@@ -658,17 +717,37 @@ app.patch('/api/admin/users/:id', async (req: Request, res: Response) => {
 // 3. AI Vision Diagnosis
 app.post('/api/ai/diagnose', async (req: Request, res: Response) => {
   try {
-    const { imageBase64, userNotes, lat, lng } = req.body;
+    const user = getDiagnosisUser(req);
+    if (!user) {
+      return res.status(401).json({ error: 'AI डायग्नोसिस के लिए लॉगिन आवश्यक है।' });
+    }
+
+    const { imageBase64, userNotes, lat, lng } = req.body || {};
     if (!geminiApiKey) {
       return res.status(503).json({ error: 'Gemini API key configure नहीं है। कृपया .env.local में GEMINI_API_KEY सेट करके सर्वर restart करें।' });
     }
-    if (!imageBase64) {
-      return res.status(400).json({ error: 'फोटो प्रदान नहीं की गई।' });
+    if (typeof imageBase64 !== 'string') {
+      return res.status(400).json({ error: 'वैध फोटो प्रदान करें।' });
     }
 
-    const match = imageBase64.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/]+={0,2})$/);
+    const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(imageBase64);
     if (!match) {
-      return res.status(400).json({ error: 'फोटो सही image format में नहीं मिली। कृपया फोटो दोबारा चुनें।' });
+      return res.status(400).json({ error: 'फोटो JPEG, PNG या WebP फ़ॉर्मेट में होनी चाहिए।' });
+    }
+    if (match[2].length % 4 !== 0) {
+      return res.status(400).json({ error: 'फोटो का Base64 डेटा मान्य नहीं है।' });
+    }
+    if (Buffer.byteLength(match[2], 'base64') > MAX_UPLOAD_BYTES) {
+      return res.status(413).json({ error: 'फोटो 4 MB से छोटी होनी चाहिए।' });
+    }
+
+    const retryAfterSeconds = checkDiagnosisRateLimit(
+      user.id,
+      req.ip || req.socket.remoteAddress || 'unknown'
+    );
+    if (retryAfterSeconds > 0) {
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      return res.status(429).json({ error: 'AI डायग्नोसिस की सीमा पूरी हुई। 15 मिनट बाद पुनः प्रयास करें।' });
     }
     const mimeType = match[1];
     const cleanBase64 = match[2];
@@ -890,6 +969,17 @@ app.post('/api/complaints', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'शिकायत का शीर्षक, विभाग, फोटो एवं स्थान आवश्यक हैं।' });
   }
 
+  if (typeof photoUrl !== 'string') {
+    return res.status(400).json({ error: 'वैध फोटो प्रदान करें।' });
+  }
+  const complaintPhotoMatch = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(photoUrl);
+  if (!complaintPhotoMatch || complaintPhotoMatch[2].length % 4 !== 0) {
+    return res.status(400).json({ error: 'फोटो JPEG, PNG या WebP फ़ॉर्मेट में होनी चाहिए।' });
+  }
+  if (Buffer.byteLength(complaintPhotoMatch[2], 'base64') > MAX_UPLOAD_BYTES) {
+    return res.status(413).json({ error: 'फोटो 4 MB से छोटी होनी चाहिए।' });
+  }
+
   // Count nearby duplicates in same ward or ~500m
   const duplicates = complaints.filter(
     (c) =>
@@ -1001,11 +1091,15 @@ app.patch('/api/complaints/:id/status', async (req: Request, res: Response) => {
     if (typeof resolutionPhotoUrl !== 'string' || !resolutionPhotoUrl.startsWith('data:image/')) {
       return res.status(400).json({ error: 'शिकायत पूरी करने के लिए समाधान की फोटो अपलोड करना जरूरी है।' });
     }
-    if (resolutionPhotoUrl.length > 22 * 1024 * 1024) {
-      return res.status(413).json({ error: 'समाधान फोटो बहुत बड़ी है। कृपया 16 MB से छोटी फोटो अपलोड करें।' });
-    }
-    if (!/^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/i.test(resolutionPhotoUrl)) {
+    const resolutionPhotoMatch = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(resolutionPhotoUrl);
+    if (!resolutionPhotoMatch) {
       return res.status(400).json({ error: 'समाधान फोटो का format मान्य नहीं है। कृपया image दोबारा अपलोड करें।' });
+    }
+    if (resolutionPhotoMatch[2].length % 4 !== 0) {
+      return res.status(400).json({ error: 'समाधान फोटो का Base64 डेटा मान्य नहीं है।' });
+    }
+    if (Buffer.byteLength(resolutionPhotoMatch[2], 'base64') > MAX_UPLOAD_BYTES) {
+      return res.status(413).json({ error: 'समाधान फोटो 4 MB से छोटी होनी चाहिए।' });
     }
   }
 
@@ -1083,6 +1177,19 @@ app.get('/api/analytics/summary', (req: Request, res: Response) => {
     departmentStats,
     sampleDataNote: 'हॉटस्पॉट मानचित्र एवं वार्ड क्लस्टर में कुछ सिमुलेटेड नमूना डेटा (Sample Data) प्रदर्शित है।',
   });
+});
+
+app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (error && typeof error === 'object' && 'type' in error) {
+    const parserError = error as { type?: string };
+    if (parserError.type === 'entity.too.large') {
+      return res.status(413).json({ error: 'अनुरोध 6 MB की सीमा से बड़ा है।' });
+    }
+    if (parserError.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'अनुरोध का JSON मान्य नहीं है।' });
+    }
+  }
+  next(error);
 });
 
 // Setup Vite middleware for fullstack SPA

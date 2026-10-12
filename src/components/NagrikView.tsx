@@ -23,6 +23,7 @@ import {
 
 interface NagrikViewProps {
   currentUser: User;
+  diagnosisToken: string;
   onComplaintCreated: () => void;
   complaints: Complaint[];
   loadingComplaints: boolean;
@@ -31,11 +32,13 @@ interface NagrikViewProps {
 
 export const NagrikView: React.FC<NagrikViewProps> = ({
   currentUser,
+  diagnosisToken,
   onComplaintCreated,
   complaints,
   loadingComplaints,
   language,
 }) => {
+  const maxPhotoSizeBytes = 4 * 1024 * 1024;
   const [activeTab, setActiveTab] = useState<'create' | 'my_complaints'>('create');
 
   // Form states
@@ -105,7 +108,16 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setAiError('कृपया JPG, PNG या WEBP फोटो चुनें।');
+      return;
+    }
+    if (file.size > maxPhotoSizeBytes) {
+      setAiError('फोटो 4 MB से छोटी होनी चाहिए।');
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -125,6 +137,10 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
       const blob = await res.blob();
       if (!blob.type.startsWith('image/')) {
         throw new Error('Sample URL did not return an image.');
+      }
+      if (blob.size > maxPhotoSizeBytes) {
+        setAiError('नमूना फोटो 4 MB सीमा से बड़ी है। कृपया दूसरी फोटो अपलोड करें।');
+        return;
       }
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -147,7 +163,10 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
     try {
       const res = await fetch('/api/ai/diagnose', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${diagnosisToken}`,
+        },
         body: JSON.stringify({
           imageBase64: imgBase64,
           lat,
@@ -344,7 +363,7 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
                     </div>
                     <div>
                       <span className="text-xs font-bold text-blue-600">फोटो चुनें या यहाँ खींचें</span>
-                      <p className="text-[11px] text-slate-400 mt-0.5">JPG, PNG, WEBP (अधिकतम 15MB)</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">JPG, PNG, WEBP (अधिकतम 4 MB)</p>
                     </div>
                   </div>
                 )}
@@ -352,7 +371,7 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileUpload}
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                 />
               </div>

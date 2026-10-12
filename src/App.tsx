@@ -17,6 +17,7 @@ export default function App() {
     localStorage.getItem('nagarvani-language') === 'en' ? 'en' : 'hi'
   );
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [diagnosisToken, setDiagnosisToken] = useState<string | null>(null);
 
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [loadingComplaints, setLoadingComplaints] = useState(false);
@@ -63,7 +64,10 @@ export default function App() {
         language={language}
         onLanguageChange={handleLanguageChange}
         onClose={() => undefined}
-        onLoginSuccess={(user) => setCurrentUser(user)}
+        onLoginSuccess={(user, _token, diagnosisToken) => {
+          setCurrentUser(user);
+          setDiagnosisToken(diagnosisToken);
+        }}
       />
     );
   }
@@ -78,6 +82,7 @@ export default function App() {
         onOpenPrivacy={() => setPrivacyModalOpen(true)}
         onLogout={() => {
           setCurrentUser(null);
+          setDiagnosisToken(null);
           setComplaints([]);
         }}
       />
@@ -89,6 +94,7 @@ export default function App() {
             {currentUser.role === 'nagrik' && (
               <NagrikView
                 currentUser={currentUser}
+                diagnosisToken={diagnosisToken || ''}
                 language={language}
                 complaints={complaints}
                 loadingComplaints={loadingComplaints}

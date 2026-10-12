@@ -17,7 +17,7 @@ const translations: Record<string, string> = {
   'समस्या की फोटो लें या अपलोड करें': 'Take or upload a photo of the issue',
   'कैमरा से फोटो खींचें। ब्राउज़र स्वतः फोटो की स्पष्टता जाँचेगा।': 'Take a photo with your camera. Your browser will check its clarity automatically.',
   'फोटो चुनें या यहाँ खींचें': 'Choose a photo or drag it here',
-  'अधिकतम 15MB': 'up to 15 MB',
+  'अधिकतम 4 MB': 'up to 4 MB',
   'या त्वरित परीक्षण हेतु नमूना फोटो चुनें:': 'Or choose a sample photo for a quick test:',
   'या त्वरित परीक्षण हेतु नमूना Photo चुनें:': 'Or choose a sample photo for a quick test:',
   'सड़क गड्ढा (Pothole)': 'Road pothole',

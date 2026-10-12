@@ -6,7 +6,7 @@ import { Language } from '../Language';
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onLoginSuccess: (user: User, token: string) => void;
+  onLoginSuccess: (user: User, token: string, diagnosisToken: string) => void;
   required?: boolean;
   language: Language;
   onLanguageChange: (language: Language) => void;
@@ -43,7 +43,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || (isSignup ? 'Registration failed' : 'Login failed'));
-      onLoginSuccess(data.user, data.token);
+      if (typeof data.diagnosisToken !== 'string') {
+        throw new Error('लॉगिन सत्र शुरू नहीं हो सका। कृपया दोबारा प्रयास करें।');
+      }
+      onLoginSuccess(data.user, data.token, data.diagnosisToken);
       onClose();
     } catch (err) {
       setError((err as Error).message);
