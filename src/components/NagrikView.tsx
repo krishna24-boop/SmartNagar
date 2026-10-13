@@ -21,6 +21,9 @@ import {
   Eye,
 } from 'lucide-react';
 
+const IMAGE_FETCH_TIMEOUT_MS = 15_000;
+const AI_DIAGNOSIS_TIMEOUT_MS = 45_000;
+
 interface NagrikViewProps {
   currentUser: User;
   diagnosisToken: string;
@@ -48,6 +51,7 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
 
   const [analyzingAi, setAnalyzingAi] = useState(false);
   const [aiDiagnosed, setAiDiagnosed] = useState<any | null>(null);
+  const [aiProvider, setAiProvider] = useState<'gemini' | 'groq' | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
 
   const [title, setTitle] = useState('');
@@ -97,6 +101,7 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
     setSubmitSuccess(null);
     setAiDiagnosed(null);
     setAiError(null);
+    setAiProvider(null);
 
     // 1. Browser Photo Quality Check
     const quality = await checkImageBlur(dataUrl);
@@ -121,16 +126,21 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      handlePhotoSelect(dataUrl);
+      const dataUrl = event.target?.result;
+      if (typeof dataUrl !== 'string') {
+        setAiError('चुनी गई फोटो पढ़ी नहीं जा सकी। कृपया दूसरी फोटो चुनें।');
+        return;
+      }
+      void handlePhotoSelect(dataUrl);
     };
+    reader.onerror = () => setAiError('चुनी गई फोटो पढ़ी नहीं जा सकी। कृपया दूसरी फोटो चुनें।');
     reader.readAsDataURL(file);
   };
 
   // Convert remote sample image to base64
   const handleSamplePhoto = async (url: string) => {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
       if (!res.ok) {
         throw new Error(`Sample photo download failed (${res.status}).`);
       }
@@ -172,6 +182,7 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
           lat,
           lng,
         }),
+        signal: AbortSignal.timeout(AI_DIAGNOSIS_TIMEOUT_MS),
       });
 
       const data = await res.json();
@@ -182,6 +193,9 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
         throw new Error('AI से मान्य विश्लेषण नहीं मिला। कृपया दोबारा प्रयास करें।');
       }
       setAiDiagnosed(data.aiAnalysis);
+      if (data.aiProvider === 'gemini' || data.aiProvider === 'groq') {
+        setAiProvider(data.aiProvider);
+      }
       setTitle(data.aiAnalysis.problemTitle);
       setCategory(data.aiAnalysis.category);
       setHindiDraft(data.aiAnalysis.hindiDraft);
@@ -476,8 +490,11 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
                 {analyzingAi && (
                   <span className="text-xs text-purple-600 font-semibold flex items-center gap-1 animate-pulse">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    AI विश्लेषण चल रहा है...
+                    Gemini व्यस्त हो तो कुछ सेकंड में Groq backup आज़माया जाएगा...
                   </span>
+                )}
+                {!analyzingAi && aiProvider === 'groq' && (
+                  <span className="text-xs text-emerald-700 font-semibold">Backup AI: Groq</span>
                 )}
               </div>
 

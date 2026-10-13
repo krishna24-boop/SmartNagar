@@ -49,11 +49,11 @@ JSON request bodies are limited to 6 MB. Uploaded diagnosis and complaint photos
 
 ## Gemini model
 
-The server calls `gemini-3.8-flash`. Google lists this model ID as generally available in its [Gemini API documentation](https://ai.google.dev/gemini-api/docs/latest-model). Set `GEMINI_API_KEY` on the server (or in Render's private environment settings); never expose it in browser code.
+The server calls `gemini-3.8-flash` first and automatically falls back to Groq's `qwen/qwen3.8-27b` vision model when Gemini is busy, unavailable, or times out. Gemini requests time out after 5 seconds without retrying first; Groq requests time out after 30 seconds. Set `GEMINI_API_KEY` and `GROQ_API_KEY` on the server (or in Render's private environment settings); never expose them in browser code.
 
 ## Deploy to Render
 
-The repository includes a `render.yaml` Blueprint for the `smartnagar` web service. Connect this GitHub repository in Render and apply the Blueprint. Configure the requested `MONGO_URI`, `GEMINI_API_KEY`, and `DEMO_*_PASSWORD` environment values as private secrets in Render. MongoDB is required for durable production data.
+The repository includes a `render.yaml` Blueprint for the `smartnagar` web service. Connect this GitHub repository in Render and apply the Blueprint. Configure the requested `MONGO_URI`, `GEMINI_API_KEY`, `GROQ_API_KEY`, and `DEMO_*_PASSWORD` environment values as private secrets in Render. MongoDB is required for durable production data.
 
 ## Data and licensing
 

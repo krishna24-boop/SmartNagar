@@ -15,6 +15,9 @@ const PORT = process.env.PORT || 3000;
 let mongoEnabled = false;
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+const GEMINI_TIMEOUT_MS = 5_000;
+const GROQ_TIMEOUT_MS = 30_000;
+type AiProvider = 'gemini' | 'groq';
 
 function getGeminiErrorStatus(error: unknown): number | undefined {
   if (typeof error !== 'object' || error === null || !('status' in error)) {
@@ -27,14 +30,54 @@ app.use(express.json({ limit: '6mb' }));
 
 // Initialize Gemini Client
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
+const groqApiKey = process.env.GROQ_API_KEY || '';
 const ai = new GoogleGenAI({
   apiKey: geminiApiKey,
   httpOptions: {
+    retryOptions: { attempts: 1 },
     headers: {
       'User-Agent': 'aistudio-build',
     },
   },
 });
+
+async function requestGroqDiagnosis(imageDataUrl: string, prompt: string): Promise<string> {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${groqApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'qwen/qwen3.8-27b',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      max_completion_tokens: 1200,
+    }),
+    signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
+  });
+
+  const result = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+    error?: { message?: string };
+  };
+  if (!response.ok) {
+    throw new Error(`Groq API returned ${response.status}: ${result.error?.message || 'No error details'}`);
+  }
+
+  const text = result.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Groq returned an empty diagnosis');
+  return text;
+}
 
 // Database Models in memory with persistent seed data
 export interface DbUser {
@@ -723,8 +766,8 @@ app.post('/api/ai/diagnose', async (req: Request, res: Response) => {
     }
 
     const { imageBase64, userNotes, lat, lng } = req.body || {};
-    if (!geminiApiKey) {
-      return res.status(503).json({ error: 'Gemini API key configure नहीं है। कृपया .env.local में GEMINI_API_KEY सेट करके सर्वर restart करें।' });
+    if (!geminiApiKey && !groqApiKey) {
+      return res.status(503).json({ error: 'AI configure नहीं है। GEMINI_API_KEY या GROQ_API_KEY सेट करें।' });
     }
     if (typeof imageBase64 !== 'string') {
       return res.status(400).json({ error: 'वैध फोटो प्रदान करें।' });
@@ -774,44 +817,44 @@ Citizen notes provided: "${userNotes || 'None'}".
 Output strictly valid JSON with these exact keys.`;
 
     let aiResult;
+    let aiProvider: AiProvider = geminiApiKey ? 'gemini' : 'groq';
     try {
-      const request = {
-        model: 'gemini-3.8-flash',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: cleanBase64,
-                mimeType,
-              },
+      let text: string;
+      if (geminiApiKey) {
+        try {
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: {
+              parts: [
+                {
+                  inlineData: {
+                    data: cleanBase64,
+                    mimeType,
+                  },
+                },
+                { text: prompt },
+              ],
             },
-            { text: prompt },
-          ],
-        },
-        config: {
-          responseMimeType: 'application/json',
-        },
-      };
-      const generateDiagnosis = () => ai.models.generateContent(request);
-      let response;
-      try {
-        response = await generateDiagnosis();
-      } catch (error) {
-        if (getGeminiErrorStatus(error) !== 503) {
-          throw error;
+            config: {
+              responseMimeType: 'application/json',
+              abortSignal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+            },
+          });
+          text = response.text || '';
+          if (!text) throw new Error('Gemini ने खाली उत्तर दिया।');
+        } catch (geminiErr) {
+          if (!groqApiKey) throw geminiErr;
+          console.warn('Gemini diagnosis failed or timed out; switching this diagnosis to Groq.');
+          aiProvider = 'groq';
+          text = await requestGroqDiagnosis(imageBase64, prompt);
         }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        response = await generateDiagnosis();
-      }
-
-      const text = response.text;
-      if (!text) {
-        throw new Error('Gemini ने खाली उत्तर दिया।');
+      } else {
+        text = await requestGroqDiagnosis(imageBase64, prompt);
       }
 
       const parsed: unknown = JSON.parse(text);
       if (typeof parsed !== 'object' || parsed === null) {
-        throw new Error('Gemini ने अपेक्षित JSON उत्तर नहीं दिया।');
+        throw new Error('AI ने अपेक्षित JSON उत्तर नहीं दिया।');
       }
       const result = parsed as Record<string, unknown>;
       const validCategories = ['sadak', 'safai', 'bijli', 'jal'] as const;
@@ -823,7 +866,7 @@ Output strictly valid JSON with these exact keys.`;
         typeof result.severityReason !== 'string' ||
         typeof result.hindiDraft !== 'string'
       ) {
-        throw new Error('Gemini के उत्तर में जरूरी diagnosis fields नहीं हैं।');
+        throw new Error('AI के उत्तर में जरूरी diagnosis fields नहीं हैं।');
       }
 
       const days = Number(result.aiEstimatedDays);
@@ -837,9 +880,12 @@ Output strictly valid JSON with these exact keys.`;
         aiEtaText: `AI का अंदाज़ा: ${Number.isInteger(days) && days > 0 ? days : 2} दिन (AI का अंदाज़ा, पक्का वादा नहीं)`,
         safetyRisk: typeof result.safetyRisk === 'string' ? result.safetyRisk : 'उच्च (High)',
       };
-    } catch (geminiErr) {
-      console.error('Gemini vision diagnosis failed:', geminiErr);
-      const status = getGeminiErrorStatus(geminiErr);
+    } catch (providerErr) {
+      console.error(`${aiProvider} vision diagnosis failed:`, providerErr);
+      const status = aiProvider === 'gemini' ? getGeminiErrorStatus(providerErr) : undefined;
+      if (aiProvider === 'groq') {
+        return res.status(502).json({ error: 'Gemini/Groq से फोटो का विश्लेषण नहीं हो पाया। GROQ_API_KEY और Groq API status जाँचें।' });
+      }
       if (status === 503) {
         return res.status(503).json({ error: 'Gemini AI सेवा अभी व्यस्त है। कृपया कुछ देर बाद फिर कोशिश करें।' });
       }
@@ -873,6 +919,7 @@ Output strictly valid JSON with these exact keys.`;
 
     res.json({
       aiAnalysis: aiResult,
+      aiProvider,
       weather: weatherData,
       priority: {
         severityPoints: sevPoints,
