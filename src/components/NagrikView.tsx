@@ -24,6 +24,27 @@ import {
 const IMAGE_FETCH_TIMEOUT_MS = 15_000;
 const AI_DIAGNOSIS_TIMEOUT_MS = 45_000;
 
+interface AiDiagnosisResult {
+  problemTitle: string;
+  category: DepartmentType;
+  severity: PriorityLevel;
+  severityReason: string;
+  hindiDraft: string;
+  aiEstimatedDays: number;
+  aiEtaText: string;
+  safetyRisk: string;
+  isCivicIssue: boolean;
+  locationMatches: boolean;
+  verificationReason: string;
+}
+
+interface AiDiagnosisResponse {
+  aiAnalysis: AiDiagnosisResult;
+  aiProvider: 'gemini' | 'groq';
+  weather: any;
+  priority: any;
+}
+
 interface NagrikViewProps {
   currentUser: User;
   diagnosisToken: string;
@@ -50,9 +71,10 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
   const [blurWarningDismissed, setBlurWarningDismissed] = useState(false);
 
   const [analyzingAi, setAnalyzingAi] = useState(false);
-  const [aiDiagnosed, setAiDiagnosed] = useState<any | null>(null);
+  const [aiDiagnosed, setAiDiagnosed] = useState<AiDiagnosisResult | null>(null);
   const [aiProvider, setAiProvider] = useState<'gemini' | 'groq' | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [photoVerificationError, setPhotoVerificationError] = useState<string | null>(null);
 
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState<DepartmentType>('sadak');
@@ -102,6 +124,7 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
     setAiDiagnosed(null);
     setAiError(null);
     setAiProvider(null);
+    setPhotoVerificationError(null);
 
     // 1. Browser Photo Quality Check
     const quality = await checkImageBlur(dataUrl);
@@ -168,7 +191,12 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
   };
 
   // Call Server-Side AI Diagnosis
-  const triggerAiDiagnosis = async (imgBase64: string) => {
+  const triggerAiDiagnosis = async (
+    imgBase64: string,
+    address = locationText,
+    latitude = lat,
+    longitude = lng
+  ): Promise<AiDiagnosisResponse | null> => {
     setAnalyzingAi(true);
     try {
       const res = await fetch('/api/ai/diagnose', {
@@ -179,8 +207,9 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
         },
         body: JSON.stringify({
           imageBase64: imgBase64,
-          lat,
-          lng,
+          lat: latitude,
+          lng: longitude,
+          locationText: address,
         }),
         signal: AbortSignal.timeout(AI_DIAGNOSIS_TIMEOUT_MS),
       });
@@ -192,18 +221,27 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
       if (!data.aiAnalysis) {
         throw new Error('AI से मान्य विश्लेषण नहीं मिला। कृपया दोबारा प्रयास करें।');
       }
-      setAiDiagnosed(data.aiAnalysis);
-      if (data.aiProvider === 'gemini' || data.aiProvider === 'groq') {
-        setAiProvider(data.aiProvider);
+      if (
+        typeof data.aiAnalysis.isCivicIssue !== 'boolean' ||
+        typeof data.aiAnalysis.locationMatches !== 'boolean' ||
+        typeof data.aiAnalysis.verificationReason !== 'string' ||
+        (data.aiProvider !== 'gemini' && data.aiProvider !== 'groq')
+      ) {
+        throw new Error('AI फोटो और स्थान सत्यापन पूरा नहीं कर सका। कृपया पुनः प्रयास करें।');
       }
+      const diagnosis = data as AiDiagnosisResponse;
+      setAiDiagnosed(data.aiAnalysis);
+      setAiProvider(data.aiProvider);
       setTitle(data.aiAnalysis.problemTitle);
       setCategory(data.aiAnalysis.category);
       setHindiDraft(data.aiAnalysis.hindiDraft);
       setWeatherData(data.weather);
       setPriorityBreakdown(data.priority);
+      return diagnosis;
     } catch (err) {
       console.error('Diagnosis failed:', err);
       setAiError(err instanceof Error ? err.message : 'AI विश्लेषण नहीं हो पाया। कृपया दोबारा प्रयास करें।');
+      return null;
     } finally {
       setAnalyzingAi(false);
     }
@@ -240,7 +278,36 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
     }
 
     setSubmitting(true);
+    setPhotoVerificationError(null);
     try {
+      const selectedCategory = category;
+      const verification = await triggerAiDiagnosis(photoBase64, locationText, lat, lng);
+      if (!verification) {
+        throw new Error('AI फोटो सत्यापन पूरा नहीं हो सका। कृपया पुनः प्रयास करें।');
+      }
+
+      const verifiedAnalysis = verification.aiAnalysis;
+      let verificationMessage: string | null = null;
+      if (!verifiedAnalysis.isCivicIssue) {
+        verificationMessage = language === 'hi'
+          ? `यह फोटो किसी वास्तविक नगर-निगम समस्या की नहीं लगती। शिकायत जमा नहीं हुई। ${verifiedAnalysis.verificationReason}`
+          : `This photo does not appear to show a real municipal issue. The complaint was not submitted. ${verifiedAnalysis.verificationReason}`;
+      } else if (!verifiedAnalysis.locationMatches) {
+        verificationMessage = language === 'hi'
+          ? `फोटो में दिखने वाला स्थान दिए गए पते से मेल नहीं खाता या सत्यापित नहीं हो सका। शिकायत जमा नहीं हुई। ${verifiedAnalysis.verificationReason}`
+          : `The visible location could not be verified against the entered address. The complaint was not submitted. ${verifiedAnalysis.verificationReason}`;
+      } else if (verifiedAnalysis.category !== selectedCategory) {
+        verificationMessage = language === 'hi'
+          ? 'फोटो में दिखी समस्या चुने गए विभाग से मेल नहीं खाती। सही विभाग चुनें या संबंधित फोटो अपलोड करें।'
+          : 'The issue in the photo does not match the selected department. Choose the correct department or upload a relevant photo.';
+      }
+
+      if (verificationMessage) {
+        setPhotoVerificationError(verificationMessage);
+        alert(verificationMessage);
+        return;
+      }
+
       const token = currentUser.id;
       const res = await fetch('/api/complaints', {
         method: 'POST',
@@ -252,7 +319,7 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
           title,
           description: title,
           hindiDraft,
-          category,
+          category: verifiedAnalysis.category,
           photoUrl: photoBase64,
           location: {
             lat,
@@ -260,16 +327,16 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
             address: locationText,
             ward,
           },
-          aiAnalysis: aiDiagnosed || {
-            problemIdentified: title,
-            detectedSeverity: priorityBreakdown?.level || 'madhyam',
-            detectedCategory: category,
-            severityReason: 'नागरिक द्वारा दर्ज समस्या',
-            aiEstimatedDays: 2,
-            aiEtaText: 'AI का अंदाज़ा: 2 दिन (AI का अंदाज़ा, पक्का वादा नहीं)',
+          aiAnalysis: {
+            problemIdentified: verifiedAnalysis.problemTitle,
+            detectedSeverity: verifiedAnalysis.severity,
+            detectedCategory: verifiedAnalysis.category,
+            severityReason: verifiedAnalysis.severityReason,
+            aiEstimatedDays: verifiedAnalysis.aiEstimatedDays,
+            aiEtaText: verifiedAnalysis.aiEtaText,
           },
-          priority: priorityBreakdown,
-          weather: weatherData,
+          priority: verification.priority,
+          weather: verification.weather,
         }),
       });
 
@@ -504,6 +571,23 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
                   <span>{aiError}</span>
                 </div>
               )}
+              {photoVerificationError && (
+                <div role="alert" className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs">
+                  {photoVerificationError}
+                </div>
+              )}
+              {aiDiagnosed && (
+                <div
+                  role={aiDiagnosed.isCivicIssue && aiDiagnosed.locationMatches ? 'status' : 'alert'}
+                  className={`p-3 border rounded-xl text-xs ${
+                    aiDiagnosed.isCivicIssue && aiDiagnosed.locationMatches
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                      : 'bg-amber-50 border-amber-200 text-amber-900'
+                  }`}
+                >
+                  {aiDiagnosed.verificationReason}
+                </div>
+              )}
 
               {submitSuccess && (
                 <div className="p-4 bg-emerald-50 border border-emerald-300 text-emerald-900 rounded-xl text-sm flex items-center gap-3">
@@ -645,7 +729,7 @@ export const NagrikView: React.FC<NagrikViewProps> = ({
                 {/* Submit button */}
                 <button
                   type="submit"
-                  disabled={submitting || !photoBase64}
+                  disabled={submitting || analyzingAi || !photoBase64}
                   className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 text-white font-bold rounded-xl text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {submitting ? (

@@ -765,7 +765,7 @@ app.post('/api/ai/diagnose', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'AI डायग्नोसिस के लिए लॉगिन आवश्यक है।' });
     }
 
-    const { imageBase64, userNotes, lat, lng } = req.body || {};
+    const { imageBase64, userNotes, lat, lng, locationText } = req.body || {};
     if (!geminiApiKey && !groqApiKey) {
       return res.status(503).json({ error: 'AI configure नहीं है। GEMINI_API_KEY या GROQ_API_KEY सेट करें।' });
     }
@@ -812,9 +812,14 @@ Analyze this uploaded citizen civic issue photograph. Identify:
 5. hindiDraft: A formal, respectful Hindi draft petition for Nagar Nigam with subject (विषय), context, and urgent action request.
 6. aiEstimatedDays: Recommended SLA resolution days (integer 1, 2, 3, or 5).
 7. safetyRisk: One of ["अति उच्च (Critical)", "उच्च (High)", "मध्यम (Medium)", "सामान्य (Low)"].
+8. isCivicIssue: true only if the photo clearly shows a real issue handled by one of the four municipal departments above; false for unrelated, stock, blank, or non-civic photos.
+9. locationMatches: true only if visible landmarks, signs, or other distinctive visual evidence in the photo supports the citizen's stated location. Do not guess or infer a match from coordinates alone; if the location cannot be verified from visible evidence, return false.
+10. verificationReason: In Hindi, briefly explain whether the photo shows a municipal issue and whether its visible surroundings match the stated location.
 
 Citizen notes provided: "${userNotes || 'None'}".
-Output strictly valid JSON with these exact keys.`;
+Citizen-stated location: "${typeof locationText === 'string' ? locationText : 'Not provided'}".
+Approximate GPS coordinates (context only; they do not prove the photo location): ${typeof lat === 'number' && typeof lng === 'number' ? `${lat}, ${lng}` : 'Not provided'}.
+Output strictly valid JSON with these exact keys: problemTitle, category, severity, severityReason, hindiDraft, aiEstimatedDays, safetyRisk, isCivicIssue, locationMatches, verificationReason.`;
 
     let aiResult;
     let aiProvider: AiProvider = geminiApiKey ? 'gemini' : 'groq';
@@ -864,7 +869,10 @@ Output strictly valid JSON with these exact keys.`;
         !validCategories.includes(result.category as (typeof validCategories)[number]) ||
         !validSeverities.includes(result.severity as (typeof validSeverities)[number]) ||
         typeof result.severityReason !== 'string' ||
-        typeof result.hindiDraft !== 'string'
+        typeof result.hindiDraft !== 'string' ||
+        typeof result.isCivicIssue !== 'boolean' ||
+        typeof result.locationMatches !== 'boolean' ||
+        typeof result.verificationReason !== 'string'
       ) {
         throw new Error('AI के उत्तर में जरूरी diagnosis fields नहीं हैं।');
       }
@@ -879,6 +887,9 @@ Output strictly valid JSON with these exact keys.`;
         aiEstimatedDays: Number.isInteger(days) && days > 0 ? days : 2,
         aiEtaText: `AI का अंदाज़ा: ${Number.isInteger(days) && days > 0 ? days : 2} दिन (AI का अंदाज़ा, पक्का वादा नहीं)`,
         safetyRisk: typeof result.safetyRisk === 'string' ? result.safetyRisk : 'उच्च (High)',
+        isCivicIssue: result.isCivicIssue,
+        locationMatches: result.locationMatches,
+        verificationReason: result.verificationReason,
       };
     } catch (providerErr) {
       console.error(`${aiProvider} vision diagnosis failed:`, providerErr);
