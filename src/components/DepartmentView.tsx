@@ -134,9 +134,7 @@ export const DepartmentView: React.FC<DepartmentViewProps> = ({
 
       if (!res.ok) {
         const data = await res.json();
-        const message = data.error || 'अपडेट विफल रहा';
-        if (newStatus === 'ho_gaya') setResolutionPhotoError(message);
-        throw new Error(message);
+        throw new Error(data.error || 'अपडेट विफल रहा');
       }
 
       onStatusUpdated();
